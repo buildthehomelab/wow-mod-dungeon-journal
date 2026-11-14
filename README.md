@@ -1,4 +1,13 @@
-# Journal
+# Journal 2.9.0
+
+<div align="center">
+
+![Interface Version](https://img.shields.io/badge/Interface-30300-blue)
+![WoW Version](https://img.shields.io/badge/WoW-3.3.5a-orange)
+[![Version](https://img.shields.io/badge/Version-2.9.0-green)](https://github.com/EvilTactician/wow-mod-forever-journal)
+[![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
+
+</div>
 
 An [AzerothCore](https://www.azerothcore.org/) (WotLK 3.3.5a) module and addon that add a
 **retail-style journal** in one window, in the spirit of WoW Forever's, with a tab for each part:
@@ -21,6 +30,11 @@ An [AzerothCore](https://www.azerothcore.org/) (WotLK 3.3.5a) module and addon t
 - Tabs from other addons: [mod-beast-collection](https://github.com/buildthehomelab/wow-mod-beast-collection)'s
   hunter **Beasts** field guide and [mod-transmog-plus](https://github.com/buildthehomelab/wow-mod-transmog-plus)'s
   **Appearances** show up here when they're installed.
+- Optional tabs from separate addons:
+  - **Progression** ([JournalProgression](https://github.com/EvilTactician/JournalProgression)):
+    your mod-individual-progression stage and what it takes to unlock the next.
+  - **Gear** ([JournalGearBIS](https://github.com/EvilTactician/JournalGearBIS)): a best-in-slot
+    gear path for your class and role, aware of your progression stage.
 
 Open it with **Shift-J**, the minimap button, `/journal`, `/quests`, `/directory`, `/lore`, `/mounts`,
 `/pets` or `/toys`. With DragonUI, its Pets & Mounts micro button (and its key binding) opens the
@@ -104,10 +118,12 @@ between alternatives counts once, and breadcrumbs you've gone past and quests yo
 offers drop out of the count. Headings
 your progression stage hasn't opened carry a lock. The journal opens on the zone you're in.
 
-On the right, the heading's quests, chains together in the order they're done ("Part 3"), with
-the same rows as an instance's Quests tab: your status (available, in your log, ready to turn in,
-done, level too low, needs an earlier quest, later progression stage), who gives it and where when
-that's somewhere else, XP and money for your character, and reward items. Click a quest for its
+On the right, the heading's quests, chains together in the order they're done ("Part 3 of 5"),
+with the same rows as an instance's Quests tab: your status (available, in your log, ready to turn
+in, done, level too low, needs an earlier quest, later progression stage), who gives it and where
+when that's somewhere else, XP and money for your character, and reward items. A quest further
+along a chain says where the chain starts: the first quest, who gives it and where (click it for a
+map flag on that giver). Click a quest for its
 objectives and a map flag on its giver; Shift-click links it in chat. The search box finds quests
 by name anywhere, each with the heading it's under. The Filter menu hides done quests, quests you
 can't take now, or headings you've finished.
@@ -275,13 +291,16 @@ At startup the module builds an index:
   items asks for (one of it), or that a vendor's extended cost asks for: tier 4 to 10 tokens,
   Ahn'Qiraj's and 40 player Naxxramas', the Head of Onyxia. Its classes are those of what it turns
   into;
-- **quests** sorted under the instance's zone, or asking for creatures or quest drops found only
-  there; status per player from the core's own checks, XP including other modules' changes
-  (such as mod-forever-dungeon-xp);
+- **quests** sorted under the instance's zone or under the subzone of the same name outside it
+  (Gnomeregan in Dun Morogh), asking for creatures or quest drops found only there, or handed out
+  only there (by someone inside, or by an item that drops only there); status per player from the
+  core's own checks, XP including other modules' changes (such as mod-forever-dungeon-xp);
 - **every quest** with a giver (`creature_queststarter`, `gameobject_queststarter`, their
   `game_event_*_quest` holiday versions, quest-starting items, spells, SmartAI, Dungeon Finder
   rewards, chain follow-ups) under its `QuestSortID` heading: a zone (subzones go to their zone),
-  a sort (class, profession, holiday), or the giver's zone for quests with neither. Chains follow
+  a sort (class, profession, holiday), or the giver's zone for quests with neither. A quest the
+  dungeon journal lists under an instance is under that instance's heading (unless it's a class,
+  profession or event quest). Chains follow
   `PrevQuestId` and `RewardNextQuest`;
 - **mounts** from the Mounts skill line (`SkillLineAbility.dbc` 777) plus any mount spell an item,
   trainer or quest teaches; **pets** from the Companion Pets skill line (778) plus any companion
@@ -539,7 +558,22 @@ end
 ```
 
 `panel` fills the window's content area (about 870 by 530). `Journal.API` is the version of this
-interface (1). `Journal.IsTabShown(key)` tells whether the journal is open on a tab.
+interface (2). `Journal.IsTabShown(key)` tells whether the journal is open on a tab.
+
+From `Journal.API` 2, `Journal.OpenQuest(questId, done)` opens the Quests tab on a quest: its
+heading picked, the quest scrolled to, opened and marked, whatever the filters (one the character
+can't take yet too). The realm is asked where the quest is first, so the answer comes later:
+`done(true)` once it shows, or `done(false)` when the tab doesn't list it (disabled, another
+faction's, unknown), and then nothing is shown. It returns `false` at once, without calling
+`done`, when the realm can't (no Quests tab, or a module older than the addon), and `true` when it
+asked:
+
+```lua
+if (Journal.API or 0) >= 2 and Journal.OpenQuest(questId, function (shown)
+    if not shown then showStartOnMap() end   -- not in the Quests tab
+end) then return end
+showStartOnMap()                             -- the realm can't open quests
+```
 
 ## Commands
 

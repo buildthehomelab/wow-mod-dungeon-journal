@@ -404,7 +404,7 @@ local function serve(msg)
 	print("  -> " .. msg)
 	if cmd == "HELLO" then
 		assert(args[4] == "1", "HELLO without the addon's features: " .. msg)
-		reply("HELLO:" .. req .. ":2:3583:4242:3")
+		reply("HELLO:" .. req .. ":2:7679:4242:3")
 	elseif cmd == "D" then
 		list("D", req, "3", {
 			"I,6,36,0,0,15,25,19,6,Deadmines,Westfall",
@@ -526,7 +526,7 @@ local function serve(msg)
 			"Q,166,0,22,14,8,2650,1800,C,234,The Defias Brotherhood,Gryan Stoutmantle,-,0,0",
 			"R,166,-,5193*1/2874*1",
 			"Q,167,5,22,14,8,2650,1800,C,234,The Defias Brotherhood,Gryan Stoutmantle,-,1,0",
-			"R,167,-,-",
+			"R,167,-,-", "S,167,166,2,C,The Defias Brotherhood,Gryan Stoutmantle,Westfall",
 			"Q,9999,7,60,58,0,0,0,C,16820,Arrival in Outland,Thrallmar Scout,Hellfire Peninsula,0,8",
 			"R,9999,-,-",
 		})
@@ -534,6 +534,15 @@ local function serve(msg)
 		list("X", req, "1", {
 			"C,166,40", "Q,166,0,22,14,8,2650,1800,C,234,The Defias Brotherhood,Gryan Stoutmantle,-,0,0", "R,166,-,-",
 		})
+	elseif cmd == "I" then
+		if args[3] == "167" then
+			list("I", req, "1", {
+				"C,167,40", "Q,167,5,22,14,8,2650,1800,C,234,The Defias Brotherhood,Gryan Stoutmantle,-,1,0", "R,167,-,-",
+				"S,167,166,2,C,The Defias Brotherhood,Gryan Stoutmantle,Westfall",
+			})
+		else
+			list("I", req, "0", {})
+		end
 	elseif cmd == "Y" then
 		-- Elwynn Forest is where the tester stands; Hellfire Peninsula is past their era (3).
 		list("Y", req, "3:9:12", {
@@ -703,7 +712,7 @@ step("boss: overview, abilities", function ()
 	assert(textShown("3,500 health"), "boss health missing")
 	assert(textShown("Defeated this lockout"), "kill not shown")
 	-- The 3.3.5 client draws a model inside a scroll frame in the wrong place.
-	local model = find(function (f) return f.__kind == "PlayerModel" and f:IsVisible() end)
+	local model = find(function (f) return f.__kind == "DressUpModel" and f:IsVisible() end)
 	assert(model, "boss model not shown")
 	local p = model:GetParent()
 	while p do
@@ -1289,6 +1298,38 @@ step("quests tab: headings, where you are, chains, era, search, filters", functi
 	tick(1)
 	assert(sent[#sent]:match("^X:%d+:defias$"), "quest search not asked: " .. sent[#sent])
 	assert(textShown("^Search: defias$") and textShown("%(Westfall%)"), "search result without its heading")
+	J.OpenSection("dungeons", true)
+	tick(0.5)
+end)
+
+step("quests: Journal.OpenQuest, chain starts", function ()
+	assert(Journal.API == 2, "Journal.API not bumped")
+	local results = {}
+	assert(Journal.OpenQuest(424242, function (ok) table.insert(results, ok) end) == true, "OpenQuest didn't ask the realm")
+	tick(0.5)
+	assert(sent[#sent]:match("^I:%d+:424242$"), "quest lookup not asked: " .. sent[#sent])
+	assert(results[1] == false, "an unlisted quest didn't answer false")
+	assert(J.view.section == "dungeons", "an unlisted quest opened the Quests tab")
+	-- picked on Elwynn, with a filter that hides the quest: it still opens on it
+	JournalCharDB.questTab.heading = 12
+	JournalCharDB.questTab.onlyAvailable = true
+	assert(Journal.OpenQuest(167, function (ok) table.insert(results, ok) end), "OpenQuest refused a listed quest")
+	tick(1)
+	assert(J.view.section == "quests", "OpenQuest didn't open the Quests tab")
+	assert(JournalCharDB.questTab.heading == 40, "the quest's heading not picked")
+	assert(results[2] == true, "OpenQuest didn't report the quest shown")
+	assert(textShown("Needs an earlier quest"), "the quest hidden by the filter")
+	assert(textShown("Part 2 of 2"), "step of the chain missing")
+	assert(textShown("Chain starts with"), "chain start missing")
+	local asked = false
+	for _, m in ipairs(sent) do if m:match("^QD:%d+:167$") then asked = true end end
+	assert(asked, "the quest wasn't opened")
+	local start = find(function (f) return f.__kind == "Button" and rawget(f, "pin") == true and f:IsVisible() end)
+	assert(start, "chain start can't be clicked")
+	start.__scripts.OnClick(start)
+	tick(0.5)
+	assert(sent[#sent]:match("^M:%d+:Q:166$"), "chain start map flag not asked: " .. sent[#sent])
+	JournalCharDB.questTab.onlyAvailable = nil
 	J.OpenSection("dungeons", true)
 	tick(0.5)
 end)

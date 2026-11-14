@@ -11,6 +11,10 @@
  *                           G,<group>,<heading>,<quests>,<countable>,<done>,<era state>,<low level>,<high level>,<name>
  *   Z:<req>:<heading>    -> ZR:<req>:<heading>:<quests sent>:<quests>, ZD rows (Q/R, as Index::HandleQuests), ZE
  *   X:<req>:<text>       -> XR:<req>:<quests>, XD rows: C,<quest>,<heading> before its Q/R rows, XE
+ *   I:<req>:<quest>      -> IR:<req>:<0/1>, ID rows as X's for that one quest, IE
+ *
+ * A quest that's part of a chain has an S row after its Q/R rows: where the chain starts (see
+ * Index::HandleQuests).
  *
  * groups: E Eastern Kingdoms, K Kalimdor, O Outland, N Northrend, D dungeons, R raids,
  * B battlegrounds, C classes, P professions, W world events, X the rest. Headings are a zone's
@@ -237,6 +241,8 @@ namespace Journal::Quests
             uint8 era = 0;
             uint8 eraEnd = 255;    // the state its giver goes away at
             uint8 step = 0;        // quests before it in its chain
+            uint32 first = 0;      // the quest its chain starts with
+            uint8 steps = 0;       // quests in its chain's longest line
             std::string title;     // lower case, for the search
         };
 
@@ -657,8 +663,15 @@ namespace Journal::Quests
             else if (sort == 0 && e.spot.placed && e.spot.zone)
                 zone = TopZone(e.spot.zone);
 
+            // A quest the dungeon journal lists under an instance is under that instance here too
+            // (Gnomeregan's quests are sorted under its subzone of Dun Morogh), unless it is a
+            // class, profession or event quest.
+            uint32 instanceMap = sort >= 0 ? Index::QuestMap(q->GetQuestId()) : 0;
+
             Heading* h;
-            if (zone)
+            if (instanceMap && !(zone && zone->mapid == instanceMap))
+                h = &InstanceHeading(instanceMap);
+            else if (zone)
                 h = &ZoneHeading(zone);
             else if (sort < 0)
                 h = &SortHeading(uint32(-sort));
@@ -680,8 +693,8 @@ namespace Journal::Quests
         if (Heading* other = sData.byId.count(OTHER) ? &sData.headings[sData.byId[OTHER]] : nullptr)
             other->name = "Miscellaneous";
 
-        // Quests with neither zone nor sort given inside an instance join the instance's own
-        // heading, when its other quests made one.
+        // Quests with neither zone nor sort given inside an instance, and the dungeon journal's
+        // quests of an instance, join the instance's own heading, when its other quests made one.
         for (Heading& h : sData.headings)
         {
             if (h.id < INSTANCE_BASE || h.quests.empty())
@@ -719,6 +732,18 @@ namespace Journal::Quests
             }
             chain[q->GetQuestId()] = { root, step };
             sData.entries[q->GetQuestId()].step = step;
+        }
+        std::unordered_map<uint32, uint8> chainSteps; // first quest -> quests in its longest line
+        for (auto const& [questId, c] : chain)
+        {
+            uint8& steps = chainSteps[c.first];
+            steps = std::max(steps, uint8(c.second + 1));
+        }
+        for (auto const& [questId, c] : chain)
+        {
+            Entry& e = sData.entries[questId];
+            e.first = c.first;
+            e.steps = chainSteps[c.first];
         }
 
         auto levelOf = [](Quest const* q) { return uint32(q->GetQuestLevel() > 0 ? q->GetQuestLevel() : q->GetMinLevel()); };
@@ -777,11 +802,15 @@ namespace Journal::Quests
         uint8 era = 0;
         uint8 eraEnd = 255;
         uint8 step = 0;
+        uint32 first = 0;
+        uint8 steps = 0;
         if (auto itr = sData.entries.find(questId); itr != sData.entries.end())
         {
             era = itr->second.era;
             eraEnd = itr->second.eraEnd;
             step = itr->second.step;
+            first = itr->second.first;
+            steps = itr->second.steps;
         }
         QuestState state = StateOf(player, q, era, eraEnd);
 
@@ -826,6 +855,21 @@ namespace Journal::Quests
         rows.push_back(Acore::StringFormat("R,{},{},{}", questId,
             Index::ItemList(q->RewardItemId, q->RewardItemIdCount, QUEST_REWARDS_COUNT),
             Index::ItemList(q->RewardChoiceItemId, q->RewardChoiceItemCount, QUEST_REWARD_CHOICES_COUNT)));
+
+        // Where its chain starts: the first quest, who gives it and where.
+        Quest const* firstQuest = steps > 1 ? sObjectMgr->GetQuestTemplate(first) : nullptr;
+        if (!firstQuest)
+            return;
+        char kind = '-';
+        std::string giverOfFirst, whereOfFirst;
+        if (auto itr = sData.entries.find(first); itr != sData.entries.end())
+        {
+            kind = itr->second.giverKind;
+            giverOfFirst = itr->second.giver;
+            whereOfFirst = WhereOf(itr->second, nullptr);
+        }
+        rows.push_back(Acore::StringFormat("S,{},{},{},{},{},{},{}", questId, first, uint32(steps), kind,
+            Escape(firstQuest->GetTitle(), 60), Escape(giverOfFirst, 30), Escape(whereOfFirst, 30)));
     }
 
     void HandleCategories(Player* player, std::string const& req)
@@ -935,6 +979,28 @@ namespace Journal::Quests
         Send(player, "XR:" + req + ":" + std::to_string(count));
         SendRows(player, "XD:" + req, rows);
         Send(player, "XE:" + req);
+    }
+
+    void HandleQuest(Player* player, std::string const& req, std::vector<std::string_view> const& args)
+    {
+        uint32 questId = 0;
+        if (args.size() < 3 || !ParseUInt(args[2], questId))
+        {
+            SendError(player, req, "bad");
+            return;
+        }
+        std::vector<std::string> rows;
+        auto itr = sData.entries.find(questId);
+        Quest const* q = sObjectMgr->GetQuestTemplate(questId);
+        auto heading = itr != sData.entries.end() ? sData.byId.find(itr->second.heading) : sData.byId.end();
+        if (q && heading != sData.byId.end() && CanSee(player, q))
+        {
+            rows.push_back(Acore::StringFormat("C,{},{}", questId, itr->second.heading));
+            AppendEntry(player, q, itr->second, &sData.headings[heading->second], rows);
+        }
+        Send(player, "IR:" + req + ":" + std::string(rows.empty() ? "0" : "1"));
+        SendRows(player, "ID:" + req, rows);
+        Send(player, "IE:" + req);
     }
 
     bool ShowGiver(Player* player, std::string const& req, uint32 questId)

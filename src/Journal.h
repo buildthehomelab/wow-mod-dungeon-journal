@@ -67,6 +67,7 @@ namespace Journal
         HELLO_LIBRARY     = 0x100, // J, P: books read, BN announces a new one
         HELLO_MODELS      = 0x400, // R: creature records for previews of creatures never seen
         HELLO_LIVE        = 0x800, // T: coins in hand and Black Market auctions for a collectible
+        HELLO_QUEST_LINKS = 0x1000, // I: the heading a quest is under; S rows: where a quest's chain starts
     };
 
     // What the addon can do, sent as HELLO's second field.
@@ -252,6 +253,9 @@ namespace Journal
         // A boss of the journal, or a creature anything summons (spells, SmartAI, boss scripts,
         // summon groups, scripts): a creature that can be met without a spawn of its own.
         bool IsSummonable(uint32 creatureEntry);
+
+        // The map of the journal instance a quest is listed under, 0 when it isn't.
+        uint32 QuestMap(uint32 questId);
     }
 
     // ---- JournalLoot.cpp: loot tables and drop chances ------------------------------------------
@@ -379,8 +383,11 @@ namespace Journal
         void HandleCategory(Player* player, std::string const& req, std::vector<std::string_view> const& args);
         // X:<req>:<text> -> XR, XD rows (C/Q/R), XE: quests by name.
         void HandleSearch(Player* player, std::string const& req, std::vector<std::string_view> const& args);
+        // I:<req>:<quest> -> IR, ID rows (C/Q/R), IE: one quest and the heading it's under.
+        void HandleQuest(Player* player, std::string const& req, std::vector<std::string_view> const& args);
 
-        // The Q and R rows of a quest for the player (see Index::HandleQuests for their fields).
+        // The Q and R rows of a quest for the player (see Index::HandleQuests for their fields), and
+        // its S row when it is part of a chain.
         // The caller has checked the player's race and class.
         void AppendRows(Player* player, Quest const* quest, char giverKind, uint32 giverEntry, std::string_view giver,
             std::string_view where, std::vector<std::string>& rows);

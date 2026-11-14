@@ -323,7 +323,7 @@ namespace Journal
             if (sConfig.collections)
                 flags |= HELLO_COLLECTIONS | HELLO_LIVE;
             if (sConfig.quests)
-                flags |= HELLO_QUESTS;
+                flags |= HELLO_QUESTS | HELLO_QUEST_LINKS;
             if (Directory::Ready())
                 flags |= HELLO_DIRECTORY;
             if (Lore::Ready())
@@ -531,6 +531,8 @@ namespace Journal
                 Quests::HandleCategory(player, req, args);
             else if (command == "X" && sConfig.quests)
                 Quests::HandleSearch(player, req, args);
+            else if (command == "I" && sConfig.quests)
+                Quests::HandleQuest(player, req, args);
             else if (command == "N" && Directory::Ready())
                 Directory::HandleList(player, req, args);
             else if (command == "Y" && Lore::Ready())

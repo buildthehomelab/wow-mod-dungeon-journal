@@ -313,8 +313,8 @@ end
 -----------------------------------------
 -- quests (fresh)
 
--- Q and R rows (and the Quests tab's C rows, the heading a search result is under) into quests,
--- in the order the server sent them.
+-- Q and R rows (and the Quests tab's C rows, the heading a search result is under, and S rows,
+-- where a quest's chain starts) into quests, in the order the server sent them.
 local function parseQuests(rows)
 	local list, byId, headingOf = {}, {}, {}
 	local function items(text, into)
@@ -334,6 +334,11 @@ local function parseQuests(rows)
 			items(r[4], byId[r[2]].choices)
 		elseif r[1] == "C" then
 			headingOf[r[2]] = r[3]
+		elseif r[1] == "S" and byId[r[2]] then
+			local q = byId[r[2]]
+			q.steps = tonumber(r[4]) or 0
+			q.start = { id = r[3], giverKind = tostring(r[5] or "-"), name = Unescape(tostring(r[6])),
+				giver = Unescape(tostring(r[7] or "-")), where = Unescape(tostring(r[8] or "-")) }
 		end
 	end
 	return list
@@ -395,6 +400,16 @@ function J.SearchQuests(text, done)
 	fetch("X" .. text:lower(), "X", { text }, function (result)
 		return parseQuests(result.rows)
 	end, done)
+end
+
+-- One quest, with the heading it's under (q.heading), or nil when the Quests tab doesn't list it.
+function J.FindQuest(id, done)
+	if not J.Has(J.HELLO_QUEST_LINKS) then done(nil) return end
+	fetch("I" .. id, "I", { tostring(id) }, function (result)
+		return parseQuests(result.rows)
+	end, function (list)
+		done(list and list[1] and list[1].heading and list[1] or nil)
+	end)
 end
 
 J.On("QUESTS_CHANGED", function ()

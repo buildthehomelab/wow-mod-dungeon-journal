@@ -194,6 +194,7 @@ namespace Journal::Index
             std::unordered_map<uint32, std::size_t> byId;
             std::unordered_multimap<uint32, std::size_t> byMap;
             std::unordered_map<uint32, Giver> givers;            // quest -> who starts it
+            std::unordered_map<uint32, uint32> questMaps;        // quest -> the map of the instance it's listed under
             std::unordered_map<uint32, uint32> baseOf;           // difficulty entry -> base entry
             std::unordered_set<uint32> learnable;                // base entries whose casts are remembered
             std::unordered_set<uint32> journalMaps;
@@ -829,53 +830,105 @@ namespace Journal::Index
                             creatureMaps[BaseEntry(s)].insert(sData.instances[i].map);
                     }
 
-            auto onlyOn = [&](uint32 creature) -> int64
+            std::unordered_map<uint32, std::unordered_set<uint32>> objectMaps;
+            for (auto const& [spawnId, data] : sObjectMgr->GetAllGOData())
+                objectMaps[data.id].insert(data.mapid);
+
+            // The journal map something is only ever on, or -1.
+            auto onlyIn = [&](std::unordered_map<uint32, std::unordered_set<uint32>> const& maps, uint32 entry) -> int64
             {
-                auto itr = creatureMaps.find(BaseEntry(creature));
-                if (itr == creatureMaps.end() || itr->second.size() != 1)
+                auto itr = maps.find(entry);
+                if (itr == maps.end() || itr->second.size() != 1)
                     return -1;
                 uint32 map = *itr->second.begin();
                 return sData.journalMaps.count(map) ? int64(map) : -1;
             };
-
-            // Quest drops: item -> the one journal map all its droppers live on.
-            std::unordered_map<uint32, std::vector<uint32>> lootToCreatures;
-            for (auto const& [entry, cinfo] : *sObjectMgr->GetCreatureTemplates())
-                if (cinfo.lootid)
-                    lootToCreatures[cinfo.lootid].push_back(BaseEntry(entry));
-
-            std::unordered_map<uint32, int64> questItemMap;   // -1 = drops in more than one place
-            std::unordered_map<uint32, uint32> questItemBoss;  // item -> a boss creature dropping it
-            if (QueryResult result = WorldDatabase.Query("SELECT CAST(Entry AS UNSIGNED), CAST(Item AS UNSIGNED) "
-                "FROM creature_loot_template WHERE QuestRequired = 1 AND Reference = 0"))
-                do
-                {
-                    Field* f = result->Fetch();
-                    uint32 loot = uint32(f[0].Get<uint64>());
-                    uint32 item = uint32(f[1].Get<uint64>());
-                    auto droppers = lootToCreatures.find(loot);
-                    if (droppers == lootToCreatures.end())
-                        continue;
-                    for (uint32 creature : droppers->second)
-                    {
-                        int64 map = onlyOn(creature);
-                        auto [itr, inserted] = questItemMap.emplace(item, map);
-                        if (!inserted && itr->second != map)
-                            itr->second = -1;
-                        if (bossInstance.count(creature))
-                            questItemBoss.emplace(item, creature);
-                    }
-                } while (result->NextRow());
+            auto onlyOn = [&](uint32 creature) -> int64 { return onlyIn(creatureMaps, BaseEntry(creature)); };
 
             // Who starts each quest.
             std::unordered_map<uint32, uint32> creatureStarter, objectStarter, itemStarter;
+            std::unordered_set<uint32> starterItems;
             for (auto const& [creature, quest] : *sObjectMgr->GetCreatureQuestRelationMap())
                 creatureStarter.emplace(quest, creature);
             for (auto const& [object, quest] : *sObjectMgr->GetGOQuestRelationMap())
                 objectStarter.emplace(quest, object);
             for (auto const& [entry, proto] : *sObjectMgr->GetItemTemplateStore())
                 if (proto.StartQuest)
+                {
                     itemStarter.emplace(proto.StartQuest, entry);
+                    starterItems.insert(entry);
+                }
+
+            // Quest drops, and the items that start a quest: item -> the one journal map all its
+            // droppers live on.
+            std::unordered_map<uint32, std::vector<uint32>> lootToCreatures;
+            for (auto const& [entry, cinfo] : *sObjectMgr->GetCreatureTemplates())
+                if (cinfo.lootid)
+                    lootToCreatures[cinfo.lootid].push_back(BaseEntry(entry));
+
+            std::unordered_map<uint32, int64> questItemMap;   // -1 = drops in more than one place
+            std::unordered_map<uint32, int64> starterItemMap;
+            std::unordered_map<uint32, uint32> questItemBoss;  // item -> a boss creature dropping it
+            auto addDrop = [&](std::unordered_map<uint32, int64>& into, uint32 loot, uint32 item, bool boss)
+            {
+                auto droppers = lootToCreatures.find(loot);
+                if (droppers == lootToCreatures.end())
+                    return;
+                for (uint32 creature : droppers->second)
+                {
+                    int64 map = onlyOn(creature);
+                    auto [itr, inserted] = into.emplace(item, map);
+                    if (!inserted && itr->second != map)
+                        itr->second = -1;
+                    if (boss && bossInstance.count(creature))
+                        questItemBoss.emplace(item, creature);
+                }
+            };
+            if (QueryResult result = WorldDatabase.Query("SELECT CAST(Entry AS UNSIGNED), CAST(Item AS UNSIGNED), "
+                "CAST(QuestRequired AS UNSIGNED) FROM creature_loot_template WHERE Reference = 0"))
+                do
+                {
+                    Field* f = result->Fetch();
+                    uint32 loot = uint32(f[0].Get<uint64>());
+                    uint32 item = uint32(f[1].Get<uint64>());
+                    if (f[2].Get<uint64>())
+                        addDrop(questItemMap, loot, item, true);
+                    if (starterItems.count(item))
+                        addDrop(starterItemMap, loot, item, false);
+                } while (result->NextRow());
+            // Items that start a quest also drop through references (one level).
+            if (QueryResult result = WorldDatabase.Query("SELECT CAST(c.Entry AS UNSIGNED), CAST(r.Item AS UNSIGNED) "
+                "FROM creature_loot_template c JOIN reference_loot_template r ON r.Entry = c.Reference "
+                "WHERE c.Reference > 0 AND r.Reference = 0"))
+                do
+                {
+                    Field* f = result->Fetch();
+                    uint32 item = uint32(f[1].Get<uint64>());
+                    if (starterItems.count(item))
+                        addDrop(starterItemMap, uint32(f[0].Get<uint64>()), item, false);
+                } while (result->NextRow());
+
+            // Classic sorts many dungeon quests under a subzone of the continent named after the
+            // dungeon (Gnomeregan in Dun Morogh, Uldaman in the Badlands): name -> journal map.
+            auto nameKey = [](std::string const& name)
+            {
+                std::string key = Lower(name);
+                return key.rfind("the ", 0) == 0 ? key.substr(4) : key;
+            };
+            std::unordered_map<std::string, int64> mapByName;
+            auto addName = [&](std::string const& name, uint32 map)
+            {
+                if (name.empty())
+                    return;
+                auto [itr, inserted] = mapByName.emplace(nameKey(name), int64(map));
+                if (!inserted && itr->second != int64(map))
+                    itr->second = -1;
+            };
+            for (Instance const& inst : sData.instances)
+            {
+                addName(inst.name, inst.map);
+                addName(MapName(inst.map), inst.map);
+            }
 
             std::unordered_map<std::size_t, std::vector<Quest const*>> perInstance;
             for (auto const& [questId, quest] : sObjectMgr->GetQuestTemplates())
@@ -917,6 +970,24 @@ namespace Journal::Index
                     if (boss != questItemBoss.end() && instHint == SIZE_MAX)
                         instHint = bossInstance[boss->second];
                 }
+
+                // Sorted under a subzone of Eastern Kingdoms or Kalimdor named after the dungeon.
+                if (map < 0 && quest->GetZoneOrSort() > 0)
+                    if (AreaTableEntry const* area = sAreaTableStore.LookupEntry(uint32(quest->GetZoneOrSort())))
+                        if (area->mapid == 0 || area->mapid == 1)
+                            if (auto itr = mapByName.find(nameKey(AreaName(area->ID))); itr != mapByName.end())
+                                map = itr->second;
+                // Given by someone or something inside it, or by an item that drops only there.
+                if (map < 0)
+                    if (auto c = creatureStarter.find(questId); c != creatureStarter.end())
+                        map = onlyOn(c->second);
+                if (map < 0)
+                    if (auto o = objectStarter.find(questId); o != objectStarter.end())
+                        map = onlyIn(objectMaps, o->second);
+                if (map < 0)
+                    if (auto it = itemStarter.find(questId); it != itemStarter.end())
+                        if (auto drop = starterItemMap.find(it->second); drop != starterItemMap.end())
+                            map = drop->second;
                 if (map < 0)
                     continue;
 
@@ -939,6 +1010,7 @@ namespace Journal::Index
                 if (chosen == SIZE_MAX)
                     continue;
                 perInstance[chosen].push_back(quest);
+                sData.questMaps[questId] = sData.instances[chosen].map;
 
                 Giver g;
                 if (auto c = creatureStarter.find(questId); c != creatureStarter.end())
@@ -1536,6 +1608,12 @@ namespace Journal::Index
             sData.instances.size(), bosses, quests, GetMSTimeDiffToNow(start));
     }
 
+    uint32 QuestMap(uint32 questId)
+    {
+        auto itr = sData.questMaps.find(questId);
+        return itr != sData.questMaps.end() ? itr->second : 0;
+    }
+
     uint32 Stamp()
     {
         return sData.stamp;
@@ -1782,6 +1860,8 @@ namespace Journal::Index
     //   Q,<quest>,<state>,<level>,<min level>,<flags>,<xp>,<money>,<giver kind C/G/I/->,<giver entry>,<name>,<giver>,<where>,
     //     <step of its chain, 0 = the first>,<era state>
     //   R,<quest>,<rewards id*n/...>,<choices id*n/...>
+    //   S,<quest>,<first quest of its chain>,<quests in the chain>,<giver kind C/G/I/->,<first quest's name>,<giver>,<where>
+    //     (a quest that's part of a chain only)
     // flags: 1 daily, 2 weekly, 4 repeatable, 8 group/elite, 16 heroic, 32 raid
     void HandleQuests(Player* player, std::string const& req, std::vector<std::string_view> const& args)
     {

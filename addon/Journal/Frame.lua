@@ -427,9 +427,9 @@ end
 --   })
 --
 -- panel fills the window's content area. Journal.API tells registrants which version of this
--- interface they talk to.
+-- interface they talk to: 2 adds Journal.OpenQuest (QuestTab.lua).
 
-Journal.API = 1
+Journal.API = 2
 
 local sections, ordered = {}, {}
 local tabCount = 0

@@ -1,7 +1,8 @@
 -- The Quests tab: every quest of the realm under the quest log's headings (zones by continent,
 -- dungeons, raids, battlegrounds, classes, professions, world events and the rest), with your
 -- progress on each. Pick a heading on the left for its quests on the right, chains in the order
--- they're done; the search box finds quests by name. Rows are Quests.lua's.
+-- they're done; the search box finds quests by name. Rows are Quests.lua's. Other addons open it
+-- on a quest with Journal.OpenQuest (at the end).
 
 local J = Journal
 local setShown = J.SetShown
@@ -35,6 +36,9 @@ local function locked(h)
 	return J.Has(J.HELLO_PROGRESSION) and (h.era or 0) > (J.state or 18)
 end
 
+-- Journal.OpenQuest's quest, until the tab has picked its heading: { id, heading, name, done }.
+local pendingOpen
+
 local function progressText(done, countable)
 	if not countable or countable == 0 then return "" end
 	if done >= countable then return "|cff40ff40" .. done .. "/" .. countable .. "|r" end
@@ -46,7 +50,10 @@ local function build(panel)
 	JournalCharDB.questTab = db
 	db.collapsed = db.collapsed or {}
 
-	local state = { headings = nil, selected = nil, entries = {} }
+	-- keep: the quest Journal.OpenQuest opened, shown whatever the filters; focus: that quest, to
+	-- scroll to once its heading's quests are in.
+	local state = { headings = nil, selected = nil, entries = {}, keep = nil, focus = nil }
+	local lastText = ""
 
 	local status = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
 	status:SetPoint("CENTER", panel, "CENTER", 0, 20)
@@ -136,6 +143,7 @@ local function build(panel)
 
 	local function selectHeading(h)
 		if state.selected ~= h then list:Reset() end
+		state.keep, state.focus = nil, nil
 		state.selected = h
 		db.heading = h and h.id or nil
 		if search:GetText() ~= "" then
@@ -325,6 +333,7 @@ local function build(panel)
 			local keep = true
 			if db.hideDone and q.state == Q.DONE then keep = false end
 			if db.onlyAvailable and q.state ~= Q.AVAILABLE and q.state ~= Q.ACTIVE and q.state ~= Q.COMPLETE then keep = false end
+			if q.id == state.keep then keep = true end
 			if keep then table.insert(out, q) end
 		end
 		return out
@@ -345,6 +354,24 @@ local function build(panel)
 			empty:Show()
 		else
 			empty:Hide()
+		end
+		local f = state.focus
+		if f then
+			state.focus = nil
+			if list:ScrollTo(f.id) then
+				f.done(true)
+			elseif not f.searched and #f.name >= 3 then
+				-- Past the most a heading sends: find it by name instead.
+				f.searched = true
+				state.focus = f
+				lastText = f.name
+				search:SetText(f.name)
+				search.hint:Hide()
+				renderRows()
+				renderRight()
+			else
+				f.done(false)
+			end
 		end
 	end
 
@@ -431,17 +458,32 @@ local function build(panel)
 			end
 			pick = pick or (state.selected and out.byId[state.selected.id]) or (db.heading and out.byId[db.heading])
 				or out.byId[out.here] or out.list[1]
+			-- Journal.OpenQuest: the quest's heading, the quest opened and marked.
+			local open = pendingOpen
+			pendingOpen = nil
+			if open and not out.byId[open.heading] then
+				open.done(false)
+				open = nil
+			end
+			if open then pick = out.byId[open.heading] end
 			if pick and state.selected and pick.id ~= state.selected.id then list:Reset() end
 			state.selected = pick
 			db.heading = pick and pick.id or nil
-			if pick and (first or pick.id == out.here) then db.collapsed[pick.group] = nil end
+			if pick and (first or open or pick.id == out.here) then db.collapsed[pick.group] = nil end
+			if open then
+				list:Reset()
+				list.open, list.highlight = open.id, open.id
+				state.keep, state.focus = open.id, open
+				lastText = ""
+				search:SetText("")
+				search:ClearFocus()
+			end
 			renderList()
-			if first then scrollToSelected() end
+			if first or open then scrollToSelected() end
 			renderRight()
 		end, force)
 	end
 
-	local lastText = ""
 	search:SetScript("OnTextChanged", function (self)
 		local text = self:GetText() or ""
 		setShown(self.hint, text == "" and not self:HasFocus())
@@ -475,3 +517,24 @@ J.AddSection({
 	build = function (panel) load = build(panel) end,
 	onShow = function () if load then load() end end,
 })
+
+-- Opens the journal's Quests tab on a quest: its heading picked, the quest scrolled to, opened
+-- and marked, whatever the filters. Works for any quest the tab lists, one the character can't take
+-- yet included. The realm is asked where the quest is first, so the answer comes later:
+-- done(true) once it shows, or done(false) when the tab doesn't list it (disabled, another
+-- faction's, unknown), and then nothing is shown. Returns false at once, without calling done,
+-- when the realm can't (no Quests tab, or a module older than this), true when it asked.
+function Journal.OpenQuest(questId, done)
+	local id = tonumber(questId)
+	done = done or function () end
+	if not id or not J.Has(J.HELLO_QUESTS) or not J.Has(J.HELLO_QUEST_LINKS) then return false end
+	J.FindQuest(id, function (q)
+		if not q then done(false) return end
+		pendingOpen = { id = id, heading = q.heading, name = q.name, done = done }
+		local wasShown = Journal.IsTabShown("quests")
+		J.OpenSection("quests")
+		-- Already on the tab, its onShow doesn't run again.
+		if wasShown and load then load() end
+	end)
+	return true
+end

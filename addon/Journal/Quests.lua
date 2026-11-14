@@ -1,6 +1,7 @@
 -- Quest lists: each quest with your status on it (to pick up, in your log, ready to turn in,
 -- done, too low, needs an earlier quest, not in your era yet), who gives it and where, the XP and
--- money it pays you and its reward items. Click a quest for its objectives and a map flag on its
+-- money it pays you and its reward items, and for a quest in a chain where the chain starts (click
+-- it for a map flag on that giver). Click a quest for its objectives and a map flag on its
 -- giver. J.CreateQuestList makes one; the instance page's Quests tab (below) and the journal's
 -- Quests window tab (QuestTab.lua) both use it.
 
@@ -60,6 +61,26 @@ local function makeRow(c, list)
 	r.detail = r:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
 	r.detail:SetJustifyH("LEFT")
 	r.detail:SetJustifyV("TOP")
+	r.chain = CreateFrame("Button", nil, r)
+	r.chain:SetHeight(14)
+	r.chain.text = r.chain:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	r.chain.text:SetAllPoints(r.chain)
+	r.chain.text:SetJustifyH("LEFT")
+	r.chain.text:SetTextColor(0.75, 0.75, 0.75)
+	r.chain:SetScript("OnClick", function (self)
+		local q = self:GetParent().quest
+		if q and q.start and self.pin then J.ShowOnMap("Q", q.start.id) end
+	end)
+	r.chain:SetScript("OnEnter", function (self)
+		local q = self:GetParent().quest
+		if not (q and q.start) then return end
+		GameTooltip:SetOwner(self, "ANCHOR_TOPLEFT")
+		GameTooltip:SetText(q.start.name, 1, 0.82, 0)
+		GameTooltip:AddLine("The first of the " .. q.steps .. " quests in this chain.", 1, 1, 1, true)
+		if self.pin then GameTooltip:AddLine("Click to flag " .. q.start.giver .. " on your map.", 0.5, 0.85, 1, true) end
+		GameTooltip:Show()
+	end)
+	r.chain:SetScript("OnLeave", function () GameTooltip:Hide() end)
 	r.mapButton = J.CreateButton(r, "Show giver on map", 150, 20)
 	r.mapButton:SetScript("OnClick", function (self)
 		local q = self:GetParent().quest
@@ -107,9 +128,25 @@ local function giverText(q)
 	return text
 end
 
+-- Where the chain a quest is part of starts: the first quest, who gives it and where.
+local function chainText(q)
+	local s = q.start
+	local text = "Chain starts with |cffffd200" .. s.name .. "|r"
+	if s.giverKind == "I" then
+		text = text .. ", from " .. s.giver
+	elseif s.giver ~= "" then
+		text = text .. "  -  " .. s.giver .. (s.where ~= "" and (", " .. s.where) or "")
+	end
+	return text
+end
+
 local function flagText(q)
 	local parts = {}
-	if q.step and q.step > 0 then table.insert(parts, "Part " .. (q.step + 1)) end
+	if (q.steps or 0) > 1 then
+		table.insert(parts, "Part " .. ((q.step or 0) + 1) .. " of " .. q.steps)
+	elseif q.step and q.step > 0 then
+		table.insert(parts, "Part " .. (q.step + 1))
+	end
 	if bit.band(q.flags, 1) ~= 0 then table.insert(parts, "Daily") end
 	if bit.band(q.flags, 2) ~= 0 then table.insert(parts, "Weekly") end
 	if bit.band(q.flags, 16) ~= 0 then table.insert(parts, "Heroic")
@@ -153,7 +190,7 @@ end
 
 -- A scrolling list of quests on parent: list.scroll is the scroll frame to anchor,
 -- list:Render(quests) shows them (in the order given), list:Reset() closes the open one and
--- scrolls back to the top. lazyItems: don't ask the server for reward items the client hasn't
+-- scrolls back to the top, list.highlight marks a quest and list:ScrollTo(id) brings it in view. lazyItems: don't ask the server for reward items the client hasn't
 -- seen (a long list would ask for hundreds at once); their tooltips still ask on hover.
 function J.CreateQuestList(parent, lazyItems)
 	local list = {}
@@ -169,7 +206,16 @@ function J.CreateQuestList(parent, lazyItems)
 
 	function list:Reset()
 		self.open = nil
+		self.highlight = nil
 		scroll:ScrollToTop()
+	end
+
+	function list:ScrollTo(id)
+		local y = self.rowY and self.rowY[id]
+		if not y then return false end
+		local max = math.max(0, c:GetHeight() - scroll:GetHeight())
+		scroll:SetVerticalScroll(math.max(0, math.min(max, y)))
+		return true
 	end
 
 	function list:Render(quests)
@@ -179,6 +225,7 @@ function J.CreateQuestList(parent, lazyItems)
 		rows:Reset()
 		local width = math.max(200, scroll:GetWidth() - 8)
 		local y = 0
+		self.rowY = {}
 		for _, q in ipairs(self.quests) do
 			local st = STATE[q.state] or STATE[Q.LOCKED]
 			local r = rows:Get()
@@ -186,6 +233,8 @@ function J.CreateQuestList(parent, lazyItems)
 			r:ClearAllPoints()
 			r:SetPoint("TOPLEFT", c, "TOPLEFT", 0, -y)
 			r:SetWidth(width)
+			self.rowY[q.id] = y
+			if q.id == list.highlight then r.band:SetTexture(1, 0.82, 0, 0.18) else r.band:SetTexture(1, 1, 1, 0.04) end
 			r.icon:SetTexture(st.icon)
 			r.icon:SetDesaturated(st.grey and true or false)
 
@@ -203,7 +252,19 @@ function J.CreateQuestList(parent, lazyItems)
 			r.status:SetText(status)
 			r.status:SetTextColor(st.color[1], st.color[2], st.color[3])
 
-			local h = placeRewards(r, q, width, 42, lazyItems)
+			local top = 42
+			if q.start and (q.step or 0) > 0 then
+				r.chain.text:SetText(chainText(q))
+				r.chain.pin = q.start.giverKind ~= "I" and q.start.giver ~= "" and J.Has(J.HELLO_MAP_PINS)
+				r.chain:ClearAllPoints()
+				r.chain:SetPoint("TOPLEFT", r, "TOPLEFT", 28, -38)
+				r.chain:SetWidth(width - 40)
+				r.chain:Show()
+				top = 54
+			else
+				r.chain:Hide()
+			end
+			local h = placeRewards(r, q, width, top, lazyItems)
 			if list.open == q.id then
 				r.detail:ClearAllPoints()
 				r.detail:SetPoint("TOPLEFT", r, "TOPLEFT", 28, -h - 2)
